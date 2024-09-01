@@ -1,6 +1,6 @@
 
 gpu_burn-drv\.o
 
-compare\.ptx
+compare\.hsaco
 
 gpu_burn

@@ -1,3 +1,5 @@
+
+#include <hip/hip_runtime.h>
 /* 
  * Copyright (c) 2016, Ville Timonen
  * All rights reserved.

@@ -30,7 +30,7 @@
 // Matrices are SIZE*SIZE..  POT should be efficiently implemented in CUBLAS
 #define SIZE 8192ul
 #define USEMEM 0.9 // Try to allocate 90% of memory
-#define COMPARE_KERNEL "compare.ptx"
+#define COMPARE_KERNEL "compare.hsaco"
 
 // Used to report op/s, measured through Visual Profiler, CUBLAS from CUDA 7.5
 // (Seems that they indeed take the naive dim^3 approach)
@@ -60,14 +60,14 @@
 
 #define SIGTERM_TIMEOUT_THRESHOLD_SECS 30 // number of seconds for sigterm to kill child processes before forcing a sigkill
 
-#include "cublas_v2.h"
+#include <hipblas/hipblas.h>
 #define CUDA_ENABLE_DEPRECATED
-#include <cuda.h>
+#include <hip/hip_runtime.h>
 
 void _checkError(int rCode, std::string file, int line, std::string desc = "") {
-    if (rCode != CUDA_SUCCESS) {
+    if (rCode != hipSuccess) {
         const char *err;
-        cuGetErrorString((CUresult)rCode, &err);
+        hipDrvGetErrorString((hipError_t)rCode, &err);
 
         throw std::runtime_error(
             (desc == "" ? std::string("Error (")
@@ -78,12 +78,13 @@ void _checkError(int rCode, std::string file, int line, std::string desc = "") {
     }
 }
 
-void _checkError(cublasStatus_t rCode, std::string file, int line, std::string desc = "") {
-    if (rCode != CUBLAS_STATUS_SUCCESS) {
+void _checkError(hipblasStatus_t rCode, std::string file, int line, std::string desc = "") {
+    if (rCode != HIPBLAS_STATUS_SUCCESS) {
+        const char *err;
 #if CUBLAS_VER_MAJOR >= 12
-		const char *err = cublasGetStatusString(rCode);
+		err = cublasGetStatusString(rCode);
 #else
-		const char *err = "";
+		err = "";
 #endif
         throw std::runtime_error(
             (desc == "" ? std::string("Error (")
@@ -109,18 +110,18 @@ template <class T> class GPU_Test {
   public:
     GPU_Test(int dev, bool doubles, bool tensors, const char *kernelFile)
         : d_devNumber(dev), d_doubles(doubles), d_tensors(tensors), d_kernelFile(kernelFile){
-        checkError(cuDeviceGet(&d_dev, d_devNumber));
-        checkError(cuCtxCreate(&d_ctx, 0, d_dev));
+        checkError(hipDeviceGet(&d_dev, d_devNumber));
+        checkError(hipCtxCreate(&d_ctx, 0, d_dev));
 
         bind();
 
         // checkError(cublasInit());
-        checkError(cublasCreate(&d_cublas), "init");
+        checkError(hipblasCreate(&d_cublas), "init");
 
         if (d_tensors)
-            checkError(cublasSetMathMode(d_cublas, CUBLAS_TENSOR_OP_MATH));
+            checkError(hipblasSetMathMode(d_cublas, HIPBLAS_TENSOR_OP_MATH));
 
-        checkError(cuMemAllocHost((void **)&d_faultyElemsHost, sizeof(int)));
+        checkError(hipMemAllocHost((void **)&d_faultyElemsHost, sizeof(int)));
         d_error = 0;
 
         g_running = true;
@@ -132,13 +133,13 @@ template <class T> class GPU_Test {
     }
     ~GPU_Test() {
         bind();
-        checkError(cuMemFree(d_Cdata), "Free A");
-        checkError(cuMemFree(d_Adata), "Free B");
-        checkError(cuMemFree(d_Bdata), "Free C");
-        cuMemFreeHost(d_faultyElemsHost);
+        checkError(hipFree(d_Cdata), "Free A");
+        checkError(hipFree(d_Adata), "Free B");
+        checkError(hipFree(d_Bdata), "Free C");
+        hipHostFree(d_faultyElemsHost);
         printf("Freed memory for dev %d\n", d_devNumber);
 
-        cublasDestroy(d_cublas);
+        hipblasDestroy(d_cublas);
         printf("Uninitted cublas\n");
     }
 
@@ -155,19 +156,19 @@ template <class T> class GPU_Test {
 
     size_t getIters() { return d_iters; }
 
-    void bind() { checkError(cuCtxSetCurrent(d_ctx), "Bind CTX"); }
+    void bind() { checkError(hipCtxSetCurrent(d_ctx), "Bind CTX"); }
 
     size_t totalMemory() {
         bind();
         size_t freeMem, totalMem;
-        checkError(cuMemGetInfo(&freeMem, &totalMem));
+        checkError(hipMemGetInfo(&freeMem, &totalMem));
         return totalMem;
     }
 
     size_t availMemory() {
         bind();
         size_t freeMem, totalMem;
-        checkError(cuMemGetInfo(&freeMem, &totalMem));
+        checkError(hipMemGetInfo(&freeMem, &totalMem));
         return freeMem;
     }
 
@@ -192,15 +193,15 @@ template <class T> class GPU_Test {
                d_resultSize, d_iters);
         if ((size_t)useBytes < 3 * d_resultSize)
             throw std::string("Low mem for result. aborting.\n");
-        checkError(cuMemAlloc(&d_Cdata, d_iters * d_resultSize), "C alloc");
-        checkError(cuMemAlloc(&d_Adata, d_resultSize), "A alloc");
-        checkError(cuMemAlloc(&d_Bdata, d_resultSize), "B alloc");
+        checkError(hipMalloc(&d_Cdata, d_iters * d_resultSize), "C alloc");
+        checkError(hipMalloc(&d_Adata, d_resultSize), "A alloc");
+        checkError(hipMalloc(&d_Bdata, d_resultSize), "B alloc");
 
-        checkError(cuMemAlloc(&d_faultyElemData, sizeof(int)), "faulty data");
+        checkError(hipMalloc(&d_faultyElemData, sizeof(int)), "faulty data");
 
         // Populating matrices A and B
-        checkError(cuMemcpyHtoD(d_Adata, A, d_resultSize), "A -> device");
-        checkError(cuMemcpyHtoD(d_Bdata, B, d_resultSize), "B -> device");
+        checkError(hipMemcpyHtoD(d_Adata, A, d_resultSize), "A -> device");
+        checkError(hipMemcpyHtoD(d_Bdata, B, d_resultSize), "B -> device");
 
         initCompareKernel();
     }
@@ -215,14 +216,14 @@ template <class T> class GPU_Test {
         for (size_t i = 0; i < d_iters; ++i) {
             if (d_doubles)
                 checkError(
-                    cublasDgemm(d_cublas, CUBLAS_OP_N, CUBLAS_OP_N, SIZE, SIZE,
+                    hipblasDgemm(d_cublas, HIPBLAS_OP_N, HIPBLAS_OP_N, SIZE, SIZE,
                                 SIZE, &alphaD, (const double *)d_Adata, SIZE,
                                 (const double *)d_Bdata, SIZE, &betaD,
                                 (double *)d_Cdata + i * SIZE * SIZE, SIZE),
                     "DGEMM");
             else
                 checkError(
-                    cublasSgemm(d_cublas, CUBLAS_OP_N, CUBLAS_OP_N, SIZE, SIZE,
+                    hipblasSgemm(d_cublas, HIPBLAS_OP_N, HIPBLAS_OP_N, SIZE, SIZE,
                                 SIZE, &alpha, (const float *)d_Adata, SIZE,
                                 (const float *)d_Bdata, SIZE, &beta,
                                 (float *)d_Cdata + i * SIZE * SIZE, SIZE),
@@ -231,44 +232,89 @@ template <class T> class GPU_Test {
     }
 
     void initCompareKernel() {
+        // {
+        //     std::ifstream f(d_kernelFile);
+        //     checkError(f.good() ? hipSuccess : hipErrorNotFound,
+        //                std::string("couldn't find compare kernel: ") + d_kernelFile);
+        // }
+        // checkError(hipModuleLoad(&d_module, d_kernelFile), "load module");
+        // checkError(hipModuleGetFunction(&d_function, d_module,
+        //                                d_doubles ? "compareD" : "compare"),
+        //            "get func");
+
+        // checkError(cuFuncSetCacheConfig(d_function, hipFuncCachePreferL1),
+        //            "L1 config");
+        // checkError(cuParamSetSize(d_function, __alignof(T *) +
+        //                                           __alignof(int *) +
+        //                                           __alignof(size_t)),
+        //            "set param size");
+        // checkError(cuParamSetv(d_function, 0, &d_Cdata, sizeof(T *)),
+        //            "set param");
+        // checkError(cuParamSetv(d_function, __alignof(T *), &d_faultyElemData,
+        //                        sizeof(T *)),
+        //            "set param");
+        // checkError(cuParamSetv(d_function, __alignof(T *) + __alignof(int *),
+        //                        &d_iters, sizeof(size_t)),
+        //            "set param");
+
+        // checkError(cuFuncSetBlockShape(d_function, g_blockSize, g_blockSize, 1),
+        //            "set block size");
+            // Check if kernel file exists
         {
             std::ifstream f(d_kernelFile);
-            checkError(f.good() ? CUDA_SUCCESS : CUDA_ERROR_NOT_FOUND,
-                       std::string("couldn't find compare kernel: ") + d_kernelFile);
+            checkError(f.good() ? hipSuccess : hipErrorNotFound,
+                    std::string("couldn't find compare kernel: ") + d_kernelFile);
         }
-        checkError(cuModuleLoad(&d_module, d_kernelFile), "load module");
-        checkError(cuModuleGetFunction(&d_function, d_module,
-                                       d_doubles ? "compareD" : "compare"),
-                   "get func");
 
-        checkError(cuFuncSetCacheConfig(d_function, CU_FUNC_CACHE_PREFER_L1),
-                   "L1 config");
-        checkError(cuParamSetSize(d_function, __alignof(T *) +
-                                                  __alignof(int *) +
-                                                  __alignof(size_t)),
-                   "set param size");
-        checkError(cuParamSetv(d_function, 0, &d_Cdata, sizeof(T *)),
-                   "set param");
-        checkError(cuParamSetv(d_function, __alignof(T *), &d_faultyElemData,
-                               sizeof(T *)),
-                   "set param");
-        checkError(cuParamSetv(d_function, __alignof(T *) + __alignof(int *),
-                               &d_iters, sizeof(size_t)),
-                   "set param");
+        // Load the module
+        checkError(hipModuleLoad(&d_module, d_kernelFile), "load module");
 
-        checkError(cuFuncSetBlockShape(d_function, g_blockSize, g_blockSize, 1),
-                   "set block size");
+        // Get the function
+        checkError(hipModuleGetFunction(&d_function, d_module,
+                                        d_doubles ? "compareD" : "compare"),
+                "get func");
+
+        // Set cache configuration
+        checkError(hipFuncSetCacheConfig(d_function, hipFuncCachePreferL1),
+                "L1 config");
     }
 
+    // void compare() {
+    //     checkError(hipMemsetD32Async(d_faultyElemData, 0, 1, 0), "memset");
+    //     checkError(cuLaunchGridAsync(d_function, SIZE / g_blockSize,
+    //                                  SIZE / g_blockSize, 0),
+    //                "Launch grid");
+    //     checkError(hipMemcpyDtoHAsync(d_faultyElemsHost, d_faultyElemData,
+    //                                  sizeof(int), 0),
+    //                "Read faultyelemdata");
+    // }
     void compare() {
-        checkError(cuMemsetD32Async(d_faultyElemData, 0, 1, 0), "memset");
-        checkError(cuLaunchGridAsync(d_function, SIZE / g_blockSize,
-                                     SIZE / g_blockSize, 0),
-                   "Launch grid");
-        checkError(cuMemcpyDtoHAsync(d_faultyElemsHost, d_faultyElemData,
-                                     sizeof(int), 0),
-                   "Read faultyelemdata");
+        // Reset the fault counter
+        checkError(hipMemsetAsync(d_faultyElemData, 0, sizeof(int), nullptr), "memset");
+
+        // Set up launch configuration
+        dim3 blockSize(g_blockSize, g_blockSize, 1);
+        dim3 gridSize(SIZE / g_blockSize, SIZE / g_blockSize, 1);
+
+        // Launch the kernel
+        void *kernelArgs[] = {&d_Cdata, &d_faultyElemData, &d_iters};
+        checkError(hipModuleLaunchKernel(d_function, 
+                                        gridSize.x, gridSize.y, gridSize.z,
+                                        blockSize.x, blockSize.y, blockSize.z,
+                                        0, nullptr, 
+                                        kernelArgs, nullptr),
+                "Launch kernel");
+
+        // Copy results back to host
+        checkError(hipMemcpyAsync(d_faultyElemsHost, d_faultyElemData,
+                                sizeof(int), hipMemcpyDeviceToHost, nullptr),
+                "Read faultyelemdata");
+
+        // Synchronize to ensure the async operations are complete
+        checkError(hipDeviceSynchronize(), "Synchronize device");
     }
+
+
 
     bool shouldRun() { return g_running; }
 
@@ -284,38 +330,38 @@ template <class T> class GPU_Test {
 
     static const int g_blockSize = 16;
 
-    CUdevice d_dev;
-    CUcontext d_ctx;
-    CUmodule d_module;
-    CUfunction d_function;
+    hipDevice_t d_dev;
+    hipCtx_t d_ctx;
+    hipModule_t d_module;
+    hipFunction_t d_function;
 
-    CUdeviceptr d_Cdata;
-    CUdeviceptr d_Adata;
-    CUdeviceptr d_Bdata;
-    CUdeviceptr d_faultyElemData;
+    hipDeviceptr_t d_Cdata;
+    hipDeviceptr_t d_Adata;
+    hipDeviceptr_t d_Bdata;
+    hipDeviceptr_t d_faultyElemData;
     int *d_faultyElemsHost;
 
-    cublasHandle_t d_cublas;
+    hipblasHandle_t d_cublas;
 };
 
 // Returns the number of devices
 int initCuda() {
 	try {
-		checkError(cuInit(0));
+		checkError(hipInit(0));
 	} catch (std::runtime_error e) {
 		fprintf(stderr, "Couldn't init CUDA: %s\n", e.what());
 		return 0;
 	}
     int deviceCount = 0;
-    checkError(cuDeviceGetCount(&deviceCount));
+    checkError(hipGetDeviceCount(&deviceCount));
 
     if (!deviceCount)
         throw std::string("No CUDA devices");
 
-#ifdef USEDEV
-    if (USEDEV >= deviceCount)
-        throw std::string("Not enough devices for USEDEV");
-#endif
+// #ifdef USEDEV
+//     if (USEDEV >= deviceCount)
+//         throw std::string("Not enough devices for USEDEV");
+// #endif
 
     return deviceCount;
 }
@@ -336,20 +382,20 @@ void startBurn(int index, int writeFd, T *A, T *B, bool doubles, bool tensors,
     try {
         int eventIndex = 0;
         const int maxEvents = 2;
-        CUevent events[maxEvents];
+        hipEvent_t events[maxEvents];
         for (int i = 0; i < maxEvents; ++i)
-            cuEventCreate(events + i, 0);
+            hipEventCreateWithFlags(events + i, 0);
 
         int nonWorkIters = maxEvents;
 
         while (our->shouldRun()) {
             our->compute();
             our->compare();
-            checkError(cuEventRecord(events[eventIndex], 0), "Record event");
+            checkError(hipEventRecord(events[eventIndex], 0), "Record event");
 
             eventIndex = ++eventIndex % maxEvents;
 
-            while (cuEventQuery(events[eventIndex]) != CUDA_SUCCESS)
+            while (hipEventQuery(events[eventIndex]) != hipSuccess)
                 usleep(1000);
 
             if (--nonWorkIters > 0)
@@ -362,7 +408,7 @@ void startBurn(int index, int writeFd, T *A, T *B, bool doubles, bool tensors,
         }
 
         for (int i = 0; i < maxEvents; ++i)
-            cuEventSynchronize(events[i]);
+            hipEventSynchronize(events[i]);
         delete our;
     } catch (const std::exception &e) {
         fprintf(stderr, "Failure during compute: %s\n", e.what());
@@ -376,68 +422,92 @@ void startBurn(int index, int writeFd, T *A, T *B, bool doubles, bool tensors,
 
 int pollTemp(pid_t *p) {
     int tempPipe[2];
-    pipe(tempPipe);
+    if (pipe(tempPipe) == -1) {
+        perror("pipe");
+        return -1;
+    }
 
     pid_t myPid = fork();
 
-    if (!myPid) {
-        close(tempPipe[0]);
-        dup2(tempPipe[1], STDOUT_FILENO);
-#if IS_JETSON
-        execlp("tegrastats", "tegrastats", "--interval", "5000", NULL);
-        fprintf(stderr, "Could not invoke tegrastats, no temps available\n");
-#else
-        execlp("nvidia-smi", "nvidia-smi", "-l", "5", "-q", "-d", "TEMPERATURE",
-               NULL);
-        fprintf(stderr, "Could not invoke nvidia-smi, no temps available\n");
-#endif
-
-        exit(ENODEV);
+    if (myPid == -1) {
+        perror("fork");
+        return -1;
     }
 
-    *p = myPid;
-    close(tempPipe[1]);
+    if (myPid == 0) {  // Child process
+        close(tempPipe[0]);
+        if (dup2(tempPipe[1], STDOUT_FILENO) == -1) {
+            perror("dup2");
+            exit(EXIT_FAILURE);
+        }
+        close(tempPipe[1]);
 
-    return tempPipe[0];
+        // Loop in the child process
+        while (1) {
+            // Execute rocm-smi
+            FILE *fp = popen("rocm-smi --showtemp --csv --alldevices", "r");
+            if (fp == NULL) {
+                fprintf(stderr, "Could not invoke rocm-smi, no temps available\n");
+                exit(EXIT_FAILURE);
+            }
+
+            char buffer[1024];
+            while (fgets(buffer, sizeof(buffer), fp) != NULL) {
+                printf("%s", buffer);  // This will write to the pipe
+            }
+
+            pclose(fp);
+            sleep(5);  // Wait for 5 seconds before the next iteration
+        }
+
+        exit(EXIT_SUCCESS);
+    } else {  // Parent process
+        *p = myPid;
+        close(tempPipe[1]);
+        return tempPipe[0];
+    }
 }
 
 void updateTemps(int handle, std::vector<int> *temps) {
-    const int readSize = 10240;
-    static int gpuIter = 0;
+    const int readSize = 1024;
     char data[readSize + 1];
 
+    // Read header line and discard
     int curPos = 0;
     do {
-        read(handle, data + curPos, sizeof(char));
+        if (read(handle, data + curPos, sizeof(char)) <= 0) {
+            // Handle end of file or error
+            return;
+        }
     } while (data[curPos++] != '\n');
 
-    data[curPos - 1] = 0;
-
-#if IS_JETSON
-    std::string data_str(data);
-    std::regex pattern("GPU@([0-9]+)C");
-    std::smatch matches;
-    if (std::regex_search(data_str, matches, pattern)) {
-        if (matches.size() > 1) {
-            int tempValue = std::stoi(matches[1]);
-            temps->at(gpuIter) = tempValue;
-            gpuIter = (gpuIter + 1) % (temps->size());
+    // Read data line
+    curPos = 0;
+    do {
+        if (read(handle, data + curPos, sizeof(char)) <= 0) {
+            // Handle end of file or error
+            return;
         }
+    } while (data[curPos++] != '\n');
+
+    data[curPos - 1] = 0;  // Null-terminate the string
+
+    // Parse the CSV line
+    char* token = strtok(data, ",");
+    if (token == NULL) return;  // No data
+
+    int gpuIndex;
+    if (sscanf(token, "card%d", &gpuIndex) != 1) return;  // Invalid format
+
+    token = strtok(NULL, ",");  // Move to edge temperature
+    if (token == NULL) return;  // No temperature data
+
+    float tempValue;
+    if (sscanf(token, "%f", &tempValue) != 1) return;  // Invalid temperature format
+
+    if (gpuIndex < temps->size()) {
+        temps->at(gpuIndex) = static_cast<int>(tempValue);  // Store as integer
     }
-#else
-    // FIXME: The syntax of this print might change in the future..
-    int tempValue;
-    if (sscanf(data,
-               "		GPU Current Temp			: %d C",
-               &tempValue) == 1) {
-        temps->at(gpuIter) = tempValue;
-        gpuIter = (gpuIter + 1) % (temps->size());
-    } else if (!strcmp(data, "		Gpu				"
-                             "	 : N/A"))
-        gpuIter =
-            (gpuIter + 1) %
-            (temps->size()); // We rotate the iterator for N/A values as well
-#endif
 }
 
 void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
@@ -655,14 +725,8 @@ template <class T>
 void launch(int runLength, bool useDoubles, bool useTensorCores,
             ssize_t useBytes, int device_id, const char * kernelFile,
             std::chrono::seconds sigterm_timeout_threshold_secs) {
-#if IS_JETSON
-    std::ifstream f_model("/proc/device-tree/model");
-    std::stringstream ss_model;
-    ss_model << f_model.rdbuf();
-    printf("%s\n", ss_model.str().c_str());
-#else
-    system("nvidia-smi -L");
-#endif
+    
+    system("rocm-smi --alldevices");
 
     // Initting A and B with random data
     T *A = (T *)malloc(sizeof(T) * SIZE * SIZE);
@@ -820,12 +884,12 @@ int main(int argc, char **argv) {
                 throw std::runtime_error("No CUDA capable GPUs found.\n");
             }
             for (int i_dev = 0; i_dev < count; i_dev++) {
-                CUdevice device_l;
+                hipDevice_t device_l;
                 char device_name[255];
-                checkError(cuDeviceGet(&device_l, i_dev));
-                checkError(cuDeviceGetName(device_name, 255, device_l));
+                checkError(hipDeviceGet(&device_l, i_dev));
+                checkError(hipDeviceGetName(device_name, 255, device_l));
                 size_t device_mem_l;
-                checkError(cuDeviceTotalMem(&device_mem_l, device_l));
+                checkError(hipDeviceTotalMem(&device_mem_l, device_l));
                 printf("ID %i: %s, %ldMB\n", i_dev, device_name,
                        device_mem_l / 1000 / 1000);
             }

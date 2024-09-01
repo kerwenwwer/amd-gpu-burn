@@ -1,54 +1,49 @@
-ifneq ("$(wildcard /usr/bin/nvcc)", "")
-CUDAPATH ?= /usr
-else ifneq ("$(wildcard /usr/local/cuda/bin/nvcc)", "")
-CUDAPATH ?= /usr/local/cuda
+ifneq ("$(wildcard /opt/rocm/bin/hipcc)", "")
+ROCMPATH ?= /opt/rocm
+else
+$(error HIPCC not found. Please install ROCm toolkit)
 endif
 
-IS_JETSON   ?= $(shell if grep -Fwq "Jetson" /proc/device-tree/model 2>/dev/null; then echo true; else echo false; fi)
-NVCC        :=  ${CUDAPATH}/bin/nvcc
+
+HIPCC       := ${ROCMPATH}/bin/hipcc
 CCPATH      ?=
 
 override CFLAGS   ?=
 override CFLAGS   += -O3
 override CFLAGS   += -Wno-unused-result
-override CFLAGS   += -I${CUDAPATH}/include
+override CFLAGS   += -I${ROCMPATH}/include
 override CFLAGS   += -std=c++11
-override CFLAGS   += -DIS_JETSON=${IS_JETSON}
 
 override LDFLAGS  ?=
-override LDFLAGS  += -lcuda
-override LDFLAGS  += -L${CUDAPATH}/lib64
-override LDFLAGS  += -L${CUDAPATH}/lib64/stubs
-override LDFLAGS  += -L${CUDAPATH}/lib
-override LDFLAGS  += -L${CUDAPATH}/lib/stubs
-override LDFLAGS  += -Wl,-rpath=${CUDAPATH}/lib64
-override LDFLAGS  += -Wl,-rpath=${CUDAPATH}/lib
-override LDFLAGS  += -lcublas
-override LDFLAGS  += -lcudart
+override LDFLAGS  += -L${ROCMPATH}/lib
+override LDFLAGS  += -Wl,-rpath=${ROCMPATH}/lib
+override LDFLAGS  += -lamdhip64
+override LDFLAGS  += -lrocblas
+override LDFLAGS  += -lhipblas
 
-COMPUTE      ?= 50
-CUDA_VERSION ?= 11.8.0
-IMAGE_DISTRO ?= ubi8
+COMPUTE      ?= gfx90a
+HIP_VERSION ?= 6.2.0
+IMAGE_DISTRO ?= ubuntu24.04
 
-override NVCCFLAGS ?=
-override NVCCFLAGS += -I${CUDAPATH}/include
-override NVCCFLAGS += -arch=compute_$(subst .,,${COMPUTE})
+override HIPCCFLAGS ?=
+override HIPCCFLAGS += -I${ROCMPATH}/include
+override HIPCCFLAGS += --offload-arch=${COMPUTE}
 
-IMAGE_NAME ?= gpu-burn
+IMAGE_NAME ?= gpu-burn 
 
 .PHONY: clean
 
-gpu_burn: gpu_burn-drv.o compare.ptx
-	g++ -o $@ $< -O3 ${LDFLAGS}
+gpu_burn: gpu_burn-drv.o compare.hsaco
+	${HIPCC} -o $@ $< -O3 ${LDFLAGS}
 
 %.o: %.cpp
-	g++ ${CFLAGS} -c $<
+	${HIPCC} ${CFLAGS} -c $<
 
-%.ptx: %.cu
-	PATH="${PATH}:${CCPATH}:." ${NVCC} ${NVCCFLAGS} -ptx $< -o $@
+%.hsaco: %.hip
+	${HIPCC} ${HIPCCFLAGS} --genco $< -o $@
 
 clean:
-	$(RM) *.ptx *.o gpu_burn
+	$(RM) *.hsaco *.o gpu_burn
 
 image:
-	docker build --build-arg CUDA_VERSION=${CUDA_VERSION} --build-arg IMAGE_DISTRO=${IMAGE_DISTRO} -t ${IMAGE_NAME} .
+	docker build --build-arg HIP_VERSION=${HIP_VERSION} --build-arg IMAGE_DISTRO=${IMAGE_DISTRO} -t ${IMAGE_NAME} .

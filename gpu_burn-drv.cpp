@@ -34,7 +34,7 @@
 
 // Used to report op/s, measured through Visual Profiler, CUBLAS from CUDA 7.5
 // (Seems that they indeed take the naive dim^3 approach)
-//#define OPS_PER_MUL 17188257792ul // Measured for SIZE = 2048
+// #define OPS_PER_MUL 17188257792ul // Measured for SIZE = 2048
 #define OPS_PER_MUL 1100048498688ul // Extrapolated for SIZE = 8192
 
 #include <algorithm>
@@ -45,6 +45,7 @@
 #include <exception>
 #include <fstream>
 #include <map>
+#include <regex>
 #include <signal.h>
 #include <stdexcept>
 #include <string.h>
@@ -56,9 +57,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <vector>
-#include <regex>
 
-#define SIGTERM_TIMEOUT_THRESHOLD_SECS 30 // number of seconds for sigterm to kill child processes before forcing a sigkill
+#define SIGTERM_TIMEOUT_THRESHOLD_SECS                                         \
+    30 // number of seconds for sigterm to kill child processes before forcing a
+       // sigkill
 
 #include <hipblas/hipblas.h>
 #define CUDA_ENABLE_DEPRECATED
@@ -78,13 +80,14 @@ void _checkError(int rCode, std::string file, int line, std::string desc = "") {
     }
 }
 
-void _checkError(hipblasStatus_t rCode, std::string file, int line, std::string desc = "") {
+void _checkError(hipblasStatus_t rCode, std::string file, int line,
+                 std::string desc = "") {
     if (rCode != HIPBLAS_STATUS_SUCCESS) {
         const char *err;
 #if CUBLAS_VER_MAJOR >= 12
-		err = cublasGetStatusString(rCode);
+        err = cublasGetStatusString(rCode);
 #else
-		err = "";
+        err = "";
 #endif
         throw std::runtime_error(
             (desc == "" ? std::string("Error (")
@@ -109,7 +112,8 @@ bool g_running = false;
 template <class T> class GPU_Test {
   public:
     GPU_Test(int dev, bool doubles, bool tensors, const char *kernelFile)
-        : d_devNumber(dev), d_doubles(doubles), d_tensors(tensors), d_kernelFile(kernelFile){
+        : d_devNumber(dev), d_doubles(doubles), d_tensors(tensors),
+          d_kernelFile(kernelFile) {
         checkError(hipDeviceGet(&d_dev, d_devNumber));
         checkError(hipCtxCreate(&d_ctx, 0, d_dev));
 
@@ -216,17 +220,17 @@ template <class T> class GPU_Test {
         for (size_t i = 0; i < d_iters; ++i) {
             if (d_doubles)
                 checkError(
-                    hipblasDgemm(d_cublas, HIPBLAS_OP_N, HIPBLAS_OP_N, SIZE, SIZE,
-                                SIZE, &alphaD, (const double *)d_Adata, SIZE,
-                                (const double *)d_Bdata, SIZE, &betaD,
-                                (double *)d_Cdata + i * SIZE * SIZE, SIZE),
+                    hipblasDgemm(d_cublas, HIPBLAS_OP_N, HIPBLAS_OP_N, SIZE,
+                                 SIZE, SIZE, &alphaD, (const double *)d_Adata,
+                                 SIZE, (const double *)d_Bdata, SIZE, &betaD,
+                                 (double *)d_Cdata + i * SIZE * SIZE, SIZE),
                     "DGEMM");
             else
                 checkError(
-                    hipblasSgemm(d_cublas, HIPBLAS_OP_N, HIPBLAS_OP_N, SIZE, SIZE,
-                                SIZE, &alpha, (const float *)d_Adata, SIZE,
-                                (const float *)d_Bdata, SIZE, &beta,
-                                (float *)d_Cdata + i * SIZE * SIZE, SIZE),
+                    hipblasSgemm(d_cublas, HIPBLAS_OP_N, HIPBLAS_OP_N, SIZE,
+                                 SIZE, SIZE, &alpha, (const float *)d_Adata,
+                                 SIZE, (const float *)d_Bdata, SIZE, &beta,
+                                 (float *)d_Cdata + i * SIZE * SIZE, SIZE),
                     "SGEMM");
         }
     }
@@ -235,7 +239,8 @@ template <class T> class GPU_Test {
         // {
         //     std::ifstream f(d_kernelFile);
         //     checkError(f.good() ? hipSuccess : hipErrorNotFound,
-        //                std::string("couldn't find compare kernel: ") + d_kernelFile);
+        //                std::string("couldn't find compare kernel: ") +
+        //                d_kernelFile);
         // }
         // checkError(hipModuleLoad(&d_module, d_kernelFile), "load module");
         // checkError(hipModuleGetFunction(&d_function, d_module,
@@ -257,13 +262,15 @@ template <class T> class GPU_Test {
         //                        &d_iters, sizeof(size_t)),
         //            "set param");
 
-        // checkError(cuFuncSetBlockShape(d_function, g_blockSize, g_blockSize, 1),
+        // checkError(cuFuncSetBlockShape(d_function, g_blockSize, g_blockSize,
+        // 1),
         //            "set block size");
-            // Check if kernel file exists
+        // Check if kernel file exists
         {
             std::ifstream f(d_kernelFile);
             checkError(f.good() ? hipSuccess : hipErrorNotFound,
-                    std::string("couldn't find compare kernel: ") + d_kernelFile);
+                       std::string("couldn't find compare kernel: ") +
+                           d_kernelFile);
         }
 
         // Load the module
@@ -272,11 +279,11 @@ template <class T> class GPU_Test {
         // Get the function
         checkError(hipModuleGetFunction(&d_function, d_module,
                                         d_doubles ? "compareD" : "compare"),
-                "get func");
+                   "get func");
 
         // Set cache configuration
         checkError(hipFuncSetCacheConfig(d_function, hipFuncCachePreferL1),
-                "L1 config");
+                   "L1 config");
     }
 
     // void compare() {
@@ -290,7 +297,8 @@ template <class T> class GPU_Test {
     // }
     void compare() {
         // Reset the fault counter
-        checkError(hipMemsetAsync(d_faultyElemData, 0, sizeof(int), nullptr), "memset");
+        checkError(hipMemsetAsync(d_faultyElemData, 0, sizeof(int), nullptr),
+                   "memset");
 
         // Set up launch configuration
         dim3 blockSize(g_blockSize, g_blockSize, 1);
@@ -298,23 +306,20 @@ template <class T> class GPU_Test {
 
         // Launch the kernel
         void *kernelArgs[] = {&d_Cdata, &d_faultyElemData, &d_iters};
-        checkError(hipModuleLaunchKernel(d_function, 
-                                        gridSize.x, gridSize.y, gridSize.z,
-                                        blockSize.x, blockSize.y, blockSize.z,
-                                        0, nullptr, 
-                                        kernelArgs, nullptr),
-                "Launch kernel");
+        checkError(hipModuleLaunchKernel(d_function, gridSize.x, gridSize.y,
+                                         gridSize.z, blockSize.x, blockSize.y,
+                                         blockSize.z, 0, nullptr, kernelArgs,
+                                         nullptr),
+                   "Launch kernel");
 
         // Copy results back to host
         checkError(hipMemcpyAsync(d_faultyElemsHost, d_faultyElemData,
-                                sizeof(int), hipMemcpyDeviceToHost, nullptr),
-                "Read faultyelemdata");
+                                  sizeof(int), hipMemcpyDeviceToHost, nullptr),
+                   "Read faultyelemdata");
 
         // Synchronize to ensure the async operations are complete
         checkError(hipDeviceSynchronize(), "Synchronize device");
     }
-
-
 
     bool shouldRun() { return g_running; }
 
@@ -346,22 +351,22 @@ template <class T> class GPU_Test {
 
 // Returns the number of devices
 int initCuda() {
-	try {
-		checkError(hipInit(0));
-	} catch (std::runtime_error e) {
-		fprintf(stderr, "Couldn't init CUDA: %s\n", e.what());
-		return 0;
-	}
+    try {
+        checkError(hipInit(0));
+    } catch (std::runtime_error e) {
+        fprintf(stderr, "Couldn't init CUDA: %s\n", e.what());
+        return 0;
+    }
     int deviceCount = 0;
     checkError(hipGetDeviceCount(&deviceCount));
 
     if (!deviceCount)
         throw std::string("No CUDA devices");
 
-// #ifdef USEDEV
-//     if (USEDEV >= deviceCount)
-//         throw std::string("Not enough devices for USEDEV");
-// #endif
+    // #ifdef USEDEV
+    //     if (USEDEV >= deviceCount)
+    //         throw std::string("Not enough devices for USEDEV");
+    // #endif
 
     return deviceCount;
 }
@@ -434,7 +439,7 @@ int pollTemp(pid_t *p) {
         return -1;
     }
 
-    if (myPid == 0) {  // Child process
+    if (myPid == 0) { // Child process
         close(tempPipe[0]);
         if (dup2(tempPipe[1], STDOUT_FILENO) == -1) {
             perror("dup2");
@@ -447,21 +452,22 @@ int pollTemp(pid_t *p) {
             // Execute rocm-smi
             FILE *fp = popen("rocm-smi --showtemp --csv --alldevices", "r");
             if (fp == NULL) {
-                fprintf(stderr, "Could not invoke rocm-smi, no temps available\n");
+                fprintf(stderr,
+                        "Could not invoke rocm-smi, no temps available\n");
                 exit(EXIT_FAILURE);
             }
 
             char buffer[1024];
             while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-                printf("%s", buffer);  // This will write to the pipe
+                printf("%s", buffer); // This will write to the pipe
             }
 
             pclose(fp);
-            sleep(5);  // Wait for 5 seconds before the next iteration
+            sleep(5); // Wait for 5 seconds before the next iteration
         }
 
         exit(EXIT_SUCCESS);
-    } else {  // Parent process
+    } else { // Parent process
         *p = myPid;
         close(tempPipe[1]);
         return tempPipe[0];
@@ -490,28 +496,33 @@ void updateTemps(int handle, std::vector<int> *temps) {
         }
     } while (data[curPos++] != '\n');
 
-    data[curPos - 1] = 0;  // Null-terminate the string
+    data[curPos - 1] = 0; // Null-terminate the string
 
     // Parse the CSV line
-    char* token = strtok(data, ",");
-    if (token == NULL) return;  // No data
+    char *token = strtok(data, ",");
+    if (token == NULL)
+        return; // No data
 
     int gpuIndex;
-    if (sscanf(token, "card%d", &gpuIndex) != 1) return;  // Invalid format
+    if (sscanf(token, "card%d", &gpuIndex) != 1)
+        return; // Invalid format
 
-    token = strtok(NULL, ",");  // Move to edge temperature
-    if (token == NULL) return;  // No temperature data
+    token = strtok(NULL, ","); // Move to edge temperature
+    if (token == NULL)
+        return; // No temperature data
 
     float tempValue;
-    if (sscanf(token, "%f", &tempValue) != 1) return;  // Invalid temperature format
+    if (sscanf(token, "%f", &tempValue) != 1)
+        return; // Invalid temperature format
 
     if (gpuIndex < temps->size()) {
-        temps->at(gpuIndex) = static_cast<int>(tempValue);  // Store as integer
+        temps->at(gpuIndex) = static_cast<int>(tempValue); // Store as integer
     }
 }
 
 void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
-                   int runTime, std::chrono::seconds sigterm_timeout_threshold_secs) {
+                   int runTime,
+                   std::chrono::seconds sigterm_timeout_threshold_secs) {
     fd_set waitHandles;
 
     pid_t tempPid;
@@ -673,7 +684,8 @@ void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
 
     kill(tempPid, SIGTERM);
 
-    // processes should be terminated by SIGTERM within threshold time (so wait and then check pids)
+    // processes should be terminated by SIGTERM within threshold time (so wait
+    // and then check pids)
     std::this_thread::sleep_for(sigterm_timeout_threshold_secs);
 
     // check each process and see if they are alive
@@ -695,18 +707,21 @@ void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
         killed_processes.push_back(return_pid);
     }
 
-    // number of killed process should be number GPUs + 1 (need to add tempPid process) to exit while loop early
+    // number of killed process should be number GPUs + 1 (need to add tempPid
+    // process) to exit while loop early
     if (killed_processes.size() != clientPid.size() + 1) {
         printf("\nKilling processes with SIGKILL (force kill)\n");
 
         for (size_t i = 0; i < clientPid.size(); ++i) {
             // check if pid was already killed with SIGTERM before using SIGKILL
-            if (std::find(killed_processes.begin(), killed_processes.end(), clientPid.at(i)) == killed_processes.end())
+            if (std::find(killed_processes.begin(), killed_processes.end(),
+                          clientPid.at(i)) == killed_processes.end())
                 kill(clientPid.at(i), SIGKILL);
         }
 
         // check if pid was already killed with SIGTERM before using SIGKILL
-        if (std::find(killed_processes.begin(), killed_processes.end(), tempPid) == killed_processes.end())
+        if (std::find(killed_processes.begin(), killed_processes.end(),
+                      tempPid) == killed_processes.end())
             kill(tempPid, SIGKILL);
     }
 
@@ -723,9 +738,9 @@ void listenClients(std::vector<int> clientFd, std::vector<pid_t> clientPid,
 
 template <class T>
 void launch(int runLength, bool useDoubles, bool useTensorCores,
-            ssize_t useBytes, int device_id, const char * kernelFile,
+            ssize_t useBytes, int device_id, const char *kernelFile,
             std::chrono::seconds sigterm_timeout_threshold_secs) {
-    
+
     system("rocm-smi --alldevices");
 
     // Initting A and B with random data
@@ -764,7 +779,8 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
             close(mainPipe[1]);
             int devCount;
             read(readMain, &devCount, sizeof(int));
-            listenClients(clientPipes, clientPids, runLength, sigterm_timeout_threshold_secs);
+            listenClients(clientPipes, clientPids, runLength,
+                          sigterm_timeout_threshold_secs);
         }
         for (size_t i = 0; i < clientPipes.size(); ++i)
             close(clientPipes.at(i));
@@ -777,8 +793,8 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
             int devCount = initCuda();
             write(writeFd, &devCount, sizeof(int));
 
-            startBurn<T>(0, writeFd, A, B, useDoubles, useTensorCores,
-                         useBytes, kernelFile);
+            startBurn<T>(0, writeFd, A, B, useDoubles, useTensorCores, useBytes,
+                         kernelFile);
 
             close(writeFd);
             return;
@@ -815,7 +831,8 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
                     }
                 }
 
-                listenClients(clientPipes, clientPids, runLength, sigterm_timeout_threshold_secs);
+                listenClients(clientPipes, clientPids, runLength,
+                              sigterm_timeout_threshold_secs);
             }
         }
         for (size_t i = 0; i < clientPipes.size(); ++i)
@@ -838,7 +855,8 @@ void showHelp() {
     printf("-i N\tExecute only on GPU N\n");
     printf("-c FILE\tUse FILE as compare kernel.  Default is %s\n",
            COMPARE_KERNEL);
-    printf("-stts T\tSet timeout threshold to T seconds for using SIGTERM to abort child processes before using SIGKILL.  Default is %d\n",
+    printf("-stts T\tSet timeout threshold to T seconds for using SIGTERM to "
+           "abort child processes before using SIGKILL.  Default is %d\n",
            SIGTERM_TIMEOUT_THRESHOLD_SECS);
     printf("-h\tShow this help message\n\n");
     printf("Examples:\n");
@@ -870,7 +888,8 @@ int main(int argc, char **argv) {
     ssize_t useBytes = 0; // 0 == use USEMEM% of free mem
     int device_id = -1;
     char *kernelFile = (char *)COMPARE_KERNEL;
-    std::chrono::seconds sigterm_timeout_threshold_secs = std::chrono::seconds(SIGTERM_TIMEOUT_THRESHOLD_SECS);
+    std::chrono::seconds sigterm_timeout_threshold_secs =
+        std::chrono::seconds(SIGTERM_TIMEOUT_THRESHOLD_SECS);
 
     std::vector<std::string> args(argv, argv + argc);
     for (size_t i = 1; i < args.size(); ++i) {
@@ -951,7 +970,8 @@ int main(int argc, char **argv) {
             thisParam++;
 
             if (argv[i + 1]) {
-                sigterm_timeout_threshold_secs = std::chrono::seconds(atoi(argv[i + 1]));
+                sigterm_timeout_threshold_secs =
+                    std::chrono::seconds(atoi(argv[i + 1]));
                 thisParam++;
             }
         }

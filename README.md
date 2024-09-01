@@ -1,4 +1,4 @@
-# gpu-burn
+# AMD-gpu-burn
 Multi-GPU stress test
 http://wili.cc/blog/gpu-burn.html
 

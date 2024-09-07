@@ -236,35 +236,6 @@ template <class T> class GPU_Test {
     }
 
     void initCompareKernel() {
-        // {
-        //     std::ifstream f(d_kernelFile);
-        //     checkError(f.good() ? hipSuccess : hipErrorNotFound,
-        //                std::string("couldn't find compare kernel: ") +
-        //                d_kernelFile);
-        // }
-        // checkError(hipModuleLoad(&d_module, d_kernelFile), "load module");
-        // checkError(hipModuleGetFunction(&d_function, d_module,
-        //                                d_doubles ? "compareD" : "compare"),
-        //            "get func");
-
-        // checkError(cuFuncSetCacheConfig(d_function, hipFuncCachePreferL1),
-        //            "L1 config");
-        // checkError(cuParamSetSize(d_function, __alignof(T *) +
-        //                                           __alignof(int *) +
-        //                                           __alignof(size_t)),
-        //            "set param size");
-        // checkError(cuParamSetv(d_function, 0, &d_Cdata, sizeof(T *)),
-        //            "set param");
-        // checkError(cuParamSetv(d_function, __alignof(T *), &d_faultyElemData,
-        //                        sizeof(T *)),
-        //            "set param");
-        // checkError(cuParamSetv(d_function, __alignof(T *) + __alignof(int *),
-        //                        &d_iters, sizeof(size_t)),
-        //            "set param");
-
-        // checkError(cuFuncSetBlockShape(d_function, g_blockSize, g_blockSize,
-        // 1),
-        //            "set block size");
         // Check if kernel file exists
         {
             std::ifstream f(d_kernelFile);
@@ -286,15 +257,6 @@ template <class T> class GPU_Test {
                    "L1 config");
     }
 
-    // void compare() {
-    //     checkError(hipMemsetD32Async(d_faultyElemData, 0, 1, 0), "memset");
-    //     checkError(cuLaunchGridAsync(d_function, SIZE / g_blockSize,
-    //                                  SIZE / g_blockSize, 0),
-    //                "Launch grid");
-    //     checkError(hipMemcpyDtoHAsync(d_faultyElemsHost, d_faultyElemData,
-    //                                  sizeof(int), 0),
-    //                "Read faultyelemdata");
-    // }
     void compare() {
         // Reset the fault counter
         checkError(hipMemsetAsync(d_faultyElemData, 0, sizeof(int), nullptr),
@@ -741,7 +703,7 @@ void launch(int runLength, bool useDoubles, bool useTensorCores,
             ssize_t useBytes, int device_id, const char *kernelFile,
             std::chrono::seconds sigterm_timeout_threshold_secs) {
 
-    system("rocm-smi --alldevices");
+    system("rocm-smi --showid");
 
     // Initting A and B with random data
     T *A = (T *)malloc(sizeof(T) * SIZE * SIZE);
